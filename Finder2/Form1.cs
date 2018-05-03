@@ -3,18 +3,21 @@ using System.Windows.Forms;
 using System.Threading;
 using System.Xml;
 using System;
-using System.IO;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
+
 
 namespace Finder2
 {
     public partial class Form1 : Form
     {
-        private TimeSpan timePassed = new TimeSpan(0,0,0,0);
+        
         private string _fileRegEx;
         private string _directoryForSearch;
         private string _compareString;
 
+        private TimeSpan timePassed;
+        private int filesCount;
         private Label label2;
         private Label timeLabel;
         private Label label3;
@@ -31,57 +34,56 @@ namespace Finder2
         private Label label1;
         private Button Cancel;
         private Button btnPause;
-        private BackgroundWorker backgroundWorker1;
+       // private BackgroundWorker backgroundWorker1;
         private XmlDocument AppData;
         private static ManualResetEvent PauseWorker = new ManualResetEvent(true);
+        private BlockingCollection<Searcher.CurrentState> queueState;
+        private CancellationTokenSource token;
+        private System.Timers.Timer timer1;
+
 
 
         public Form1()
         {
             LoadSearchParameters();
             InitializeComponent();
-
         }
 
-        //Проверяем изменение объекта  state в Searcher
-        private void backgroundWorker1_ProgressChanged_1(object sender, ProgressChangedEventArgs e)
+
+        //Метод потребитель для Consumer/Produ
+        void Consumer()
         {
-            Searcher.CurrentState state =
-                (Searcher.CurrentState)e.UserState;
-            this.WordsCounted.Text = state.FilesCounted.ToString();
-            this.CurrentFile.Text = state.CurrentFile;
-            //Если в файле были совпадения, отрисовываем путь в TreeView
-            if (state.isMatched)
+            while(!token.IsCancellationRequested)
+                
             {
-                string pathToFile = state.CurrentFile.Remove(
-                    state.CurrentFile.IndexOf(treeView1.Nodes[0].Text),
-                    treeView1.Nodes[0].Text.Length + 1);
-                List<string> pathDirectories = new List<string>(pathToFile.Split('\\'));
-                AddNodePathToFile(pathDirectories, treeView1.Nodes[0]);
+                var s = queueState.Take();
+                filesCount++;
+                if (InvokeRequired)
+                {
+
+                   
+                    BeginInvoke(new Action(() => CurrentFile.Text = s.CurrentFile));
+                    BeginInvoke(new Action(() => WordsCounted.Text = filesCount.ToString()));
+                    timeLabel.BeginInvoke(new Action(() => timeLabel.Text = timePassed.ToString()));
+                    if (s.isMatched)
+                    {
+                        BeginInvoke(new Action(() =>
+                        {
+                            string pathToFile = s.CurrentFile.Remove(
+                                s.CurrentFile.IndexOf(treeView1.Nodes[0].Text),
+                                treeView1.Nodes[0].Text.Length + 1);
+                            List<string> pathDirectories = new List<string>(pathToFile.Split('\\'));
+                            AddNodePathToFile(pathDirectories, treeView1.Nodes[0]);
+                        }));
+                    }
+                }
+                else
+                {
+                    timeLabel.Text = timePassed.ToString();
+                    CurrentFile.Text = s.CurrentFile;
+                    WordsCounted.Text = filesCount.ToString();
+                }
             }
-
         }
-         
-        private void backgroundWorker1_RunWorkerCompleted_1(object sender, RunWorkerCompletedEventArgs e)
-        {
-            timer1.Stop();
-
-            if (e.Error != null)
-                MessageBox.Show("Error: " + e.Error.Message);
-            else if (e.Cancelled)
-                MessageBox.Show("Word counting canceled.");
-            else
-                MessageBox.Show("Finished counting words.");
-            SetDefaultButtonStatus();
-        }
-
-        private void timer1_Tick(object sender, EventArgs e)
-        {
-            timePassed = timePassed.Add(TimeSpan.FromMilliseconds(10)); 
-            timeLabel.Text = timePassed.ToString(@"hh\:mm\:ss\:ff");
-        }
-
-       
-
     }
 }

@@ -4,6 +4,9 @@ using System.ComponentModel;
 using System.IO;
 using System.Windows.Forms;
 using System.Xml;
+using System.Threading.Tasks;
+using System.Threading;
+using System.Collections.Concurrent;
 
 namespace Finder2
 {
@@ -14,7 +17,6 @@ namespace Finder2
         /// Обязательная переменная конструктора.
         /// </summary>
         private System.ComponentModel.IContainer components = null;
-        private Timer timer1;
 
         /// <summary>
         /// Освободить все используемые ресурсы.
@@ -46,13 +48,11 @@ namespace Finder2
             this.cboDirectory = new System.Windows.Forms.ComboBox();
             this.label1 = new System.Windows.Forms.Label();
             this.Cancel = new System.Windows.Forms.Button();
-            this.backgroundWorker1 = new System.ComponentModel.BackgroundWorker();
             this.WordsCounted = new System.Windows.Forms.TextBox();
             this.CompareString = new System.Windows.Forms.TextBox();
             this.CurrentFile = new System.Windows.Forms.TextBox();
             this.btnPause = new System.Windows.Forms.Button();
             this.label2 = new System.Windows.Forms.Label();
-            this.timer1 = new System.Windows.Forms.Timer(this.components);
             this.timeLabel = new System.Windows.Forms.Label();
             this.label3 = new System.Windows.Forms.Label();
             this.treeView1 = new System.Windows.Forms.TreeView();
@@ -112,21 +112,13 @@ namespace Finder2
             // Cancel
             // 
             this.Cancel.Enabled = false;
-            this.Cancel.Location = new System.Drawing.Point(439, 278);
+            this.Cancel.Location = new System.Drawing.Point(430, 278);
             this.Cancel.Name = "Cancel";
             this.Cancel.Size = new System.Drawing.Size(74, 23);
             this.Cancel.TabIndex = 8;
             this.Cancel.Text = "Завершить";
             this.Cancel.UseVisualStyleBackColor = true;
             this.Cancel.Click += new System.EventHandler(this.Cancel_Click);
-            // 
-            // backgroundWorker1
-            // 
-            this.backgroundWorker1.WorkerReportsProgress = true;
-            this.backgroundWorker1.WorkerSupportsCancellation = true;
-            this.backgroundWorker1.DoWork += new System.ComponentModel.DoWorkEventHandler(this.backgroundWorker1_DoWork);
-            this.backgroundWorker1.ProgressChanged += new System.ComponentModel.ProgressChangedEventHandler(this.backgroundWorker1_ProgressChanged_1);
-            this.backgroundWorker1.RunWorkerCompleted += new System.ComponentModel.RunWorkerCompletedEventHandler(this.backgroundWorker1_RunWorkerCompleted_1);
             // 
             // WordsCounted
             // 
@@ -152,9 +144,9 @@ namespace Finder2
             // btnPause
             // 
             this.btnPause.Enabled = false;
-            this.btnPause.Location = new System.Drawing.Point(524, 278);
+            this.btnPause.Location = new System.Drawing.Point(510, 278);
             this.btnPause.Name = "btnPause";
-            this.btnPause.Size = new System.Drawing.Size(75, 23);
+            this.btnPause.Size = new System.Drawing.Size(89, 23);
             this.btnPause.TabIndex = 13;
             this.btnPause.Text = "Пауза";
             this.btnPause.UseVisualStyleBackColor = true;
@@ -169,19 +161,14 @@ namespace Finder2
             this.label2.TabIndex = 14;
             this.label2.Text = "Файлов обработано:";
             // 
-            // timer1
-            // 
-            this.timer1.Interval = 10;
-            this.timer1.Tick += new System.EventHandler(this.timer1_Tick);
-            // 
             // timeLabel
             // 
             this.timeLabel.AutoSize = true;
             this.timeLabel.Location = new System.Drawing.Point(159, 274);
             this.timeLabel.Name = "timeLabel";
-            this.timeLabel.Size = new System.Drawing.Size(64, 13);
+            this.timeLabel.Size = new System.Drawing.Size(49, 13);
             this.timeLabel.TabIndex = 15;
-            this.timeLabel.Text = "00:00:00:00";
+            this.timeLabel.Text = "00:00:00";
             // 
             // label3
             // 
@@ -239,7 +226,7 @@ namespace Finder2
         #endregion
         private void btnSearch_Click(object sender, System.EventArgs e)
         {
-
+            Task TimerWorker = Task.Run(() => StartTimer());
             txtFile.Enabled = false;
             cboDirectory.Enabled = false;
             btnSearch.Text = "Поиск...";
@@ -249,15 +236,14 @@ namespace Finder2
             btnPause.Enabled = true;
             Application.DoEvents();
             SaveSearchParameters();
-            timePassed = new TimeSpan(0,0,0,0);
             Cancel.Enabled = true;
+            filesCount = 0;
             treeView1.Nodes.Clear();
-            timer1.Start();
-            PopulateTreeView();
             StartThread();
-
+            Task ConsumerWorker = Task.Run(() => Consumer());
 
         }
+
         private void SetPause()
         {
             btnPause.Text = "Продолжить";
@@ -278,10 +264,10 @@ namespace Finder2
 
         private void Cancel_Click(object sender, EventArgs e)
         {
-            SetContinue();
-            this.backgroundWorker1.CancelAsync();
+            timer1.Stop();
+            this.token.Cancel();
             Cancel.Enabled = false;
-            
+            SetDefaultButtonStatus();
         }
 
         private void Form1_Load(object sender, System.EventArgs e)
@@ -296,35 +282,28 @@ namespace Finder2
             CompareString.Text = _compareString;
         }
 
-
-
-        private void backgroundWorker1_DoWork(object sender, DoWorkEventArgs e)
-        {
-            BackgroundWorker worker;
-            worker = (BackgroundWorker)sender;
-
-            Searcher searcher = (Searcher)e.Argument;
-            searcher.CountFiles(worker, e, PauseWorker);
-        }
-
+        //Поиск файлов, Экземпляр класса   
         private void StartThread()
         {
-
-            this.WordsCounted.Text = "0";
-
-
             Searcher searcher = new Searcher();
-            searcher.CompareString = this.CompareString.Text;
-            searcher.SourceDirectory = this.cboDirectory.Text;
-            searcher.CompareFileName = this.txtFile.Text;
+            searcher.CompareString = CompareString.Text; 
+            searcher.SourceDirectory = cboDirectory.Text;
+            searcher.CompareFileName = txtFile.Text;
+            token = new CancellationTokenSource();
+            queueState = new BlockingCollection<Searcher.CurrentState>();
+            PopulateTreeView();
+            Task TaskWorker = Task.Run(() => searcher.CountFiles(token, PauseWorker, queueState));
+        }
+
+        //Для запуска в отдельном таске, считаем секунды по вызову Elapsed
+        private void StartTimer()
+        {
+            timer1 = new System.Timers.Timer();
+            timer1.Interval = 1000;
+            timer1.Start();
+            timePassed = new TimeSpan(0, 0, 0, 0);
+            timer1.Elapsed += (o, args) => timePassed = timePassed.Add(TimeSpan.FromMilliseconds(1000));
             
-
-
-            // Start the asynchronous operation.
-            if (!backgroundWorker1.IsBusy)
-                backgroundWorker1.RunWorkerAsync(searcher);
-            else
-                MessageBox.Show("Еще не готово, повторите позже");
         }
 
         private void SetDefaultButtonStatus()
@@ -337,6 +316,7 @@ namespace Finder2
             CompareString.Enabled = true;
             btnPause.Enabled = false;
             Cancel.Enabled = false;
+            this.WordsCounted.Text = "0";
         }
         //сохранение параметров поиска
         private void SaveSearchParameters()

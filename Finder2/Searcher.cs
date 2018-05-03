@@ -1,11 +1,9 @@
 ﻿using System;
 using System.IO;
 using System.Threading;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
-using System.Windows.Forms;
+using System.Collections.Concurrent;
+
 
 namespace Finder2
 {
@@ -22,25 +20,27 @@ namespace Finder2
         public string SourceDirectory;
         public string CompareString;
         public string CompareFileName;
-        private int FilesCount;
         private string line = "";
         private CurrentState state = new CurrentState();
         private DateTime lastReportDateTime = DateTime.Now;
 
         public void CountFiles(
-       System.ComponentModel.BackgroundWorker worker,
-       System.ComponentModel.DoWorkEventArgs e, ManualResetEvent PauseWorker)
+       CancellationTokenSource token, ManualResetEvent PauseWorker, BlockingCollection<CurrentState> queueState)
         {
+            ParallelOptions po = new ParallelOptions
+            {
+                CancellationToken = token.Token,
+                MaxDegreeOfParallelism = Environment.ProcessorCount
+            };
+            
             // Initialize the variables.
-
             if (CompareString == null ||
                 CompareString == System.String.Empty)
             {
                 throw new Exception("CompareString not specified.");
             }
-            FileSearch(worker, e, SourceDirectory, PauseWorker);
-               
-
+            FileSearch(SourceDirectory, PauseWorker, po, queueState);
+            token.Cancel();
         }
         private bool Matching(
         string file,
@@ -70,37 +70,30 @@ namespace Finder2
         }
 
         //Метод для рекурсивного поиска в потоке
-        public void FileSearch(System.ComponentModel.BackgroundWorker worker,
-       System.ComponentModel.DoWorkEventArgs e, string SourceDirectory, ManualResetEvent PauseWorker)
+        public void FileSearch(
+            string SourceDirectory,
+            ManualResetEvent PauseWorker,
+            ParallelOptions po, 
+            BlockingCollection<CurrentState> queueState
+            )
         {
             try
             {
-                foreach (string file in Directory.GetFiles(SourceDirectory, CompareFileName))
-                {
-                    PauseWorker.WaitOne();
+                Parallel.ForEach(Directory.GetFiles(SourceDirectory, CompareFileName), po, (file) =>
+               {
+                   PauseWorker.WaitOne();
 
-                    if (worker.CancellationPending)
-                    {
-                        e.Cancel = true;
-                        return;
-                    }
-                    else
-                    {
-                        FilesCount += 1;
-                        // Вызываем событие BW сообщаем об изменении
-                        Thread.Sleep(500);
-                        
-                        state.TimePassed = DateTime.Today.ToLongTimeString();
-                        state.FilesCounted = FilesCount;
-                        state.CurrentFile = file;
-                        state.isMatched = Matching(file, CompareString);
-                        state.CurrentDirectory = SourceDirectory;
-                        worker.ReportProgress(0, state);
-                        lastReportDateTime = DateTime.Now;
+                   {
+                        //Создаем  State Object и добавляем его в очередь
+                        CurrentState newState = new CurrentState();
+                       newState.CurrentFile = file;
+                       newState.isMatched = Matching(file, CompareString);
+                       newState.CurrentDirectory = SourceDirectory;
+                       queueState.Add(newState);
+                       po.CancellationToken.ThrowIfCancellationRequested();
 
-                        
-                    }
-                }
+                   }
+               });
             }
             catch (Exception excpt)
             {
@@ -108,52 +101,35 @@ namespace Finder2
             }
             try
             {
-                foreach (string directory in Directory.GetDirectories(SourceDirectory))
+                 foreach (string directory in Directory.GetDirectories(SourceDirectory))
                 {
                     try
                     {
-                        foreach (string file in Directory.GetFiles(directory, CompareFileName))
-                        { 
+                        Parallel.ForEach(Directory.GetFiles(SourceDirectory, CompareFileName), po, (file) =>
+                        {
                             PauseWorker.WaitOne();
-
-                            if (worker.CancellationPending)
                             {
-                                e.Cancel = true;
-                                return;
+                                CurrentState newState = new CurrentState();
+                                newState.CurrentFile = file;
+                                newState.isMatched = Matching(file, CompareString);
+                                newState.CurrentDirectory = directory;
+                                queueState.Add(newState);
+                                po.CancellationToken.ThrowIfCancellationRequested();
                             }
-                            else
-                            {
-                                FilesCount += 1;
-                                Thread.Sleep(500);
-                                // Вызываем событие BW сообщаем об изменении
-                                
-                                state.TimePassed = DateTime.Today.ToLongTimeString();
-                                state.FilesCounted = FilesCount;
-                                state.CurrentFile = file;
-                                state.isMatched = Matching(file, CompareString);
-                                Console.WriteLine(state.isMatched);
-                                Console.WriteLine(file);
-                                state.CurrentDirectory = directory;
-                                worker.ReportProgress(0, state);
-                                lastReportDateTime = DateTime.Now;
-
-                                
-                            }
-                        }
+                        });
                     }
                     catch (Exception excpt)
                     {
                         Console.WriteLine(excpt.Message);
                     }
-                    FileSearch(worker, e, directory, PauseWorker);
+                    po.CancellationToken.ThrowIfCancellationRequested();
+                    FileSearch(directory, PauseWorker, po, queueState);   
                 }
             }
             catch (Exception excpt)
             {
                 Console.WriteLine(excpt.Message);
             }
-
-        
         }
 
     }
